@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Box,
   Button,
@@ -32,10 +32,14 @@ import {
   ModalBody,
   ModalCloseButton,
   useDisclosure,
+  Spinner,
 } from '@chakra-ui/react'
 import { AddIcon, DeleteIcon, EditIcon } from '@chakra-ui/icons'
+import { db } from '../firebase/config'
+import { collection, addDoc, getDocs, doc, deleteDoc, updateDoc, query, where, setDoc } from 'firebase/firestore'
+import { useAuth } from '../context/AuthContext'
 
-function AddPlayerForm({ onAddPlayer }) {
+function AddPlayerForm({ onAddPlayer, loading }) {
   const [name, setName] = useState('')
   const [jerseyNumber, setJerseyNumber] = useState('')
   const [position, setPosition] = useState('')
@@ -118,6 +122,7 @@ function AddPlayerForm({ onAddPlayer }) {
             colorScheme="blue"
             mt={4}
             width="full"
+            isLoading={loading}
           >
             Add Player
           </Button>
@@ -129,6 +134,10 @@ function AddPlayerForm({ onAddPlayer }) {
 
 function EditPlayerModal({ isOpen, onClose, player, onSave }) {
   const [editedPlayer, setEditedPlayer] = useState(player)
+
+  useEffect(() => {
+    setEditedPlayer(player)
+  }, [player])
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -182,52 +191,6 @@ function EditPlayerModal({ isOpen, onClose, player, onSave }) {
                   value={editedPlayer.height}
                   onChange={(e) => setEditedPlayer({ ...editedPlayer, height: e.target.value })}
                 />
-              </FormControl>
-              <FormControl>
-                <FormLabel>Free Throws Made</FormLabel>
-                <NumberInput
-                  min={0}
-                  value={editedPlayer.stats.freeThrowsMade}
-                  onChange={(value) => setEditedPlayer({
-                    ...editedPlayer,
-                    stats: {
-                      ...editedPlayer.stats,
-                      freeThrowsMade: Number(value),
-                      freeThrowPercentage: editedPlayer.stats.freeThrowsAttempted > 0
-                        ? ((Number(value) / editedPlayer.stats.freeThrowsAttempted) * 100).toFixed(1)
-                        : 0
-                    }
-                  })}
-                >
-                  <NumberInputField />
-                  <NumberInputStepper>
-                    <NumberIncrementStepper />
-                    <NumberDecrementStepper />
-                  </NumberInputStepper>
-                </NumberInput>
-              </FormControl>
-              <FormControl>
-                <FormLabel>Free Throws Attempted</FormLabel>
-                <NumberInput
-                  min={0}
-                  value={editedPlayer.stats.freeThrowsAttempted}
-                  onChange={(value) => setEditedPlayer({
-                    ...editedPlayer,
-                    stats: {
-                      ...editedPlayer.stats,
-                      freeThrowsAttempted: Number(value),
-                      freeThrowPercentage: Number(value) > 0
-                        ? ((editedPlayer.stats.freeThrowsMade / Number(value)) * 100).toFixed(1)
-                        : 0
-                    }
-                  })}
-                >
-                  <NumberInputField />
-                  <NumberInputStepper>
-                    <NumberIncrementStepper />
-                    <NumberDecrementStepper />
-                  </NumberInputStepper>
-                </NumberInput>
               </FormControl>
             </VStack>
           </ModalBody>
@@ -300,41 +263,145 @@ function PlayerCard({ player, onRemove, onEdit }) {
 
 function TeamManagement({ user }) {
   const [players, setPlayers] = useState([])
+  const [teamName, setTeamName] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [fetching, setFetching] = useState(true)
+  const [savingTeamName, setSavingTeamName] = useState(false)
   const toast = useToast()
+  const { user: authUser } = useAuth()
 
-  const handleAddPlayer = (playerData) => {
-    setPlayers([...players, { ...playerData, id: Date.now() }])
-    toast({
-      title: 'Player Added',
-      description: `${playerData.name} has been added to the team.`,
-      status: 'success',
-      duration: 3000,
-      isClosable: true,
-    })
+  // Load players and team name from Firestore
+  useEffect(() => {
+    if (!authUser) return;
+    setFetching(true)
+    const fetchData = async () => {
+      try {
+        // Fetch players
+        const q = query(collection(db, 'users', authUser.uid, 'players'))
+        const querySnapshot = await getDocs(q)
+        setPlayers(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
+        
+        // Fetch team name
+        const teamDoc = await getDocs(collection(db, 'users', authUser.uid, 'team'))
+        if (!teamDoc.empty) {
+          setTeamName(teamDoc.docs[0].data().name || '')
+        }
+      } catch (error) {
+        console.error('Error fetching data:', error)
+      } finally {
+        setFetching(false)
+      }
+    }
+    fetchData()
+  }, [authUser])
+
+  // Save team name to Firestore
+  const handleSaveTeamName = async () => {
+    if (!authUser) return;
+    setSavingTeamName(true)
+    try {
+      await setDoc(doc(db, 'users', authUser.uid, 'team', 'info'), {
+        name: teamName.trim()
+      })
+      toast({
+        title: 'Team Name Saved',
+        description: 'Your team name has been updated.',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      })
+    } catch (err) {
+      toast({
+        title: 'Error',
+        description: err.message,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      })
+    } finally {
+      setSavingTeamName(false)
+    }
   }
 
-  const handleRemovePlayer = (playerId) => {
-    setPlayers(players.filter(player => player.id !== playerId))
-    toast({
-      title: 'Player Removed',
-      description: 'Player has been removed from the team.',
-      status: 'info',
-      duration: 3000,
-      isClosable: true,
-    })
+  // Add player to Firestore
+  const handleAddPlayer = async (playerData) => {
+    if (!authUser) return;
+    setLoading(true)
+    try {
+      const docRef = await addDoc(collection(db, 'users', authUser.uid, 'players'), playerData)
+      setPlayers(prev => [...prev, { ...playerData, id: docRef.id }])
+      toast({
+        title: 'Player Added',
+        description: `${playerData.name} has been added to the team.`,
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      })
+    } catch (err) {
+      toast({
+        title: 'Error',
+        description: err.message,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      })
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const handleEditPlayer = (editedPlayer) => {
-    setPlayers(players.map(player => 
-      player.id === editedPlayer.id ? editedPlayer : player
-    ))
-    toast({
-      title: 'Player Updated',
-      description: `${editedPlayer.name}'s information has been updated.`,
-      status: 'success',
-      duration: 3000,
-      isClosable: true,
-    })
+  // Remove player from Firestore
+  const handleRemovePlayer = async (playerId) => {
+    if (!authUser) return;
+    setLoading(true)
+    try {
+      await deleteDoc(doc(db, 'users', authUser.uid, 'players', playerId))
+      setPlayers(players.filter(player => player.id !== playerId))
+      toast({
+        title: 'Player Removed',
+        description: 'Player has been removed from the team.',
+        status: 'info',
+        duration: 3000,
+        isClosable: true,
+      })
+    } catch (err) {
+      toast({
+        title: 'Error',
+        description: err.message,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Edit player in Firestore
+  const handleEditPlayer = async (editedPlayer) => {
+    if (!authUser) return;
+    setLoading(true)
+    try {
+      await updateDoc(doc(db, 'users', authUser.uid, 'players', editedPlayer.id), editedPlayer)
+      setPlayers(players.map(player => player.id === editedPlayer.id ? editedPlayer : player))
+      toast({
+        title: 'Player Updated',
+        description: `${editedPlayer.name}'s information has been updated.`,
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      })
+    } catch (err) {
+      toast({
+        title: 'Error',
+        description: err.message,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      })
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -342,14 +409,44 @@ function TeamManagement({ user }) {
       <VStack spacing={8} align="stretch">
         <Heading>Team Management</Heading>
         
-        <AddPlayerForm onAddPlayer={handleAddPlayer} />
+        {/* Team Name Section */}
+        <Card>
+          <CardHeader>
+            <Heading size="md">Team Information</Heading>
+          </CardHeader>
+          <CardBody>
+            <VStack spacing={4} align="stretch">
+              <FormControl>
+                <FormLabel>Team Name</FormLabel>
+                <HStack>
+                  <Input
+                    placeholder="Enter your team name"
+                    value={teamName}
+                    onChange={(e) => setTeamName(e.target.value)}
+                  />
+                  <Button
+                    colorScheme="blue"
+                    onClick={handleSaveTeamName}
+                    isLoading={savingTeamName}
+                    isDisabled={!teamName.trim()}
+                  >
+                    Save Team Name
+                  </Button>
+                </HStack>
+              </FormControl>
+            </VStack>
+          </CardBody>
+        </Card>
 
+        <AddPlayerForm onAddPlayer={handleAddPlayer} loading={loading} />
         <Card>
           <CardHeader>
             <Heading size="md">Current Roster</Heading>
           </CardHeader>
           <CardBody>
-            {players.length === 0 ? (
+            {fetching ? (
+              <Spinner />
+            ) : players.length === 0 ? (
               <Text color="gray.500">No players added yet.</Text>
             ) : (
               <Grid templateColumns="repeat(auto-fill, minmax(300px, 1fr))" gap={4}>

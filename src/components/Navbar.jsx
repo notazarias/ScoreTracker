@@ -1,7 +1,21 @@
 import { Box, Flex, Button, Heading, Spacer, HStack } from '@chakra-ui/react'
 import { Link as RouterLink } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 
 function Navbar({ user }) {
+  console.log('Navbar rendering with user:', user);
+  
+  const { logout } = useAuth();
+  
+  const handleLogout = async () => {
+    try {
+      await logout();
+      console.log('Logout successful');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+  
   return (
     <Box
       as="nav"
@@ -50,6 +64,7 @@ function Navbar({ user }) {
             <Button
               variant="ghost"
               colorScheme="red"
+              onClick={handleLogout}
             >
               Logout
             </Button>
